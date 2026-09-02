@@ -1,0 +1,11 @@
+<?php
+namespace App\Http\Controllers\Api;
+use App\Http\Controllers\Controller;
+use App\Models\{InventoryBatch,Product,StockMovement};
+use Illuminate\Http\{Request,JsonResponse};
+use Illuminate\Support\Facades\DB;
+class InventoryController extends Controller {
+ public function summary(Request $request):JsonResponse { $q=InventoryBatch::query(); if($request->filled('store_id'))$q->where('store_id',$request->integer('store_id')); $value=(clone $q)->selectRaw('COALESCE(SUM(quantity*unit_cost),0) v')->value('v');$total=(clone $q)->sum('quantity');$reserved=(clone $q)->sum('reserved_quantity');$low=Product::query()->whereHas('batches')->withSum('batches as stock','quantity')->get()->filter(fn($p)=>(float)$p->stock<=(float)$p->reorder_level)->count();return response()->json(['inventory_value'=>(float)$value,'total_units'=>(float)$total,'reserved'=>(float)$reserved,'available'=>(float)$total-(float)$reserved,'low_stock'=>$low]); }
+ public function ledger(Request $request):JsonResponse { $q=InventoryBatch::with('product'); if($request->filled('store_id'))$q->where('store_id',$request->integer('store_id'));return response()->json($q->orderBy('product_id')->paginate($request->integer('per_page',50))); }
+ public function adjust(Request $request):JsonResponse { $d=$request->validate(['product_id'=>'required|exists:products,id','store_id'=>'nullable|exists:stores,id','warehouse_id'=>'nullable|exists:warehouses,id','quantity'=>'required|numeric','reason'=>'required|in:manual,damaged,expired,lost,shrinkage,count','note'=>'nullable|string']);$row=DB::transaction(function()use($d,$request){$batch=InventoryBatch::firstOrCreate(['product_id'=>$d['product_id'],'store_id'=>$d['store_id']??null,'warehouse_id'=>$d['warehouse_id']??null,'lot_number'=>null],['quantity'=>0,'reserved_quantity'=>0,'unit_cost'=>0]);$batch->increment('quantity',$d['quantity']);$number='ADJ-'.now()->format('ymdHis');DB::table('stock_adjustments')->insert(['number'=>$number,...$d,'user_id'=>$request->user()?->id,'created_at'=>now(),'updated_at'=>now()]);return StockMovement::create(['product_id'=>$d['product_id'],'store_id'=>$d['store_id']??null,'warehouse_id'=>$d['warehouse_id']??null,'batch_id'=>$batch->id,'type'=>'adjustment:'.$d['reason'],'quantity'=>$d['quantity'],'note'=>$d['note']??null,'user_id'=>$request->user()?->id]);});return response()->json($row,201); }
+}
